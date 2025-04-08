@@ -1,47 +1,85 @@
-from telegram.ext import Application, MessageHandler, filters
 import logging
-import re
-from dotenv import load_dotenv
 import os
+import asyncio
+from collections import defaultdict
+from dotenv import load_dotenv
+from telegram.ext import Application, MessageHandler, filters
 
 load_dotenv()
 
+# Настройка логгера
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    filename='bot.log'
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ],
+    force=True
 )
 
+logger = logging.getLogger(__name__)
+
+# Конфигурация
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TARGET_CHAT_ID = int(os.getenv("TARGET_CHAT_ID"))
+TARGET_NUMBERS = {"827", "818", "828", "854", "3632", "2191", "3139", "3355", "2274"}
 
-# Фильтр по содержанию
-TARGET_NUMBERS = {"500", "600"}
+# Временное хранилище для альбомов
+media_groups = defaultdict(list)
+media_timers = {}
+
+async def forward_album(media_group_id, context):
+    messages = media_groups.pop(media_group_id, [])
+    for msg in messages:
+        try:
+            await msg.forward(chat_id=TARGET_CHAT_ID)
+            logging.info(f"✅ Переслано сообщение из альбома")
+        except Exception as e:
+            logging.error(f"❗ Ошибка при пересылке сообщения из альбома: {e}")
+
+    media_timers.pop(media_group_id, None)
+
+async def schedule_forward_album(media_group_id, context, delay=3):
+    await asyncio.sleep(delay)
+    if media_group_id in media_groups:
+        await forward_album(media_group_id, context)
 
 async def forward_message(update, context):
-    # Игнорируем сообщения из целевого чата
-    if update.message.chat_id == TARGET_CHAT_ID:
+    message = update.message
+    if not message or message.chat_id == TARGET_CHAT_ID:
         return
 
-    if update.message.text:
-        text = update.message.text
-        found_numbers = re.findall(r'\d+', text)
+    text = (message.text or message.caption or "").lower()
+    if not text:
+        logging.info("Пропущено сообщение без текста или подписи.")
+        return
 
-        if any(num in TARGET_NUMBERS for num in found_numbers):
-            await update.message.forward(chat_id=TARGET_CHAT_ID)
-            print(f"✅ Сообщение было перенаправлено: {text}")
+    matched = [num for num in TARGET_NUMBERS if num in text]
+    logging.info(f"🔍 Найдены совпадения: {matched}")
+
+    if matched:
+        mgid = message.media_group_id
+        if mgid:
+            media_groups[mgid].append(message)
+            logging.info(f"📸 Добавлено сообщение в альбом {mgid} (всего: {len(media_groups[mgid])})")
+
+            if mgid not in media_timers:
+                media_timers[mgid] = asyncio.create_task(schedule_forward_album(mgid, context))
         else:
-            print(f"❌ Сообщение не было перенаправлено: {text}")
+            try:
+                await message.forward(chat_id=TARGET_CHAT_ID)
+                logging.info(f"✅ Сообщение было перенаправлено: {text}")
+            except Exception as e:
+                logging.error(f"❗ Ошибка при пересылке: {e}")
+    else:
+        logging.info(f"❌ Сообщение не было перенаправлено: {text}")
 
 def main():
-    application = Application.builder() \
-        .token(TOKEN) \
-        .arbitrary_callback_data(True) \
-        .build()
-
+    application = Application.builder().token(TOKEN).build()
     application.add_handler(MessageHandler(filters.ALL, forward_message))
 
-    print("Бот включён и отслеживает числа:", TARGET_NUMBERS)
+    logging.info(f"🚀 Бот запущен и отслеживает числа: {', '.join(TARGET_NUMBERS)}")
     application.run_polling()
 
 if __name__ == "__main__":
