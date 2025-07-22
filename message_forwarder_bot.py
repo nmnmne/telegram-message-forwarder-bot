@@ -18,6 +18,9 @@ logging.basicConfig(
     force=True
 )
 
+logging.getLogger('telegram').setLevel(logging.WARNING)
+logging.getLogger('httpx').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # Конфигурация
